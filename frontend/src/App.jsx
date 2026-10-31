@@ -1091,7 +1091,6 @@ function AddMemberModal({ onClose, onRegistered, plans = [] }) {
   const [price, setPrice] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [externalReference, setExternalReference] = useState('')
-  const [whatsappOptIn, setWhatsappOptIn] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [saving, setSaving] = useState(false)
   const [registeredMember, setRegisteredMember] = useState(null)
@@ -1176,7 +1175,7 @@ function AddMemberModal({ onClose, onRegistered, plans = [] }) {
         p_price: amount,
         p_payment_method: paymentMethod,
         p_external_reference: externalReference.trim() || null,
-        p_whatsapp_opt_in: whatsappOptIn,
+        p_whatsapp_opt_in: false,
       })
       if (error) throw error
 
@@ -1203,7 +1202,7 @@ function AddMemberModal({ onClose, onRegistered, plans = [] }) {
 
         {registeredMember ? (
           <div className="mt-6 space-y-4">
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-6 text-emerald-900"><p className="font-semibold">Member saved successfully</p><p className="mt-1">Member number: <strong>{registeredMember.member_number}</strong></p><p>Membership: <strong>{registeredMember.registered_duration_label || `${registeredMember.duration_days} days`}</strong></p><p>Fee recorded: <strong>{formatMoney(registeredMember.amount)}</strong></p><p>Payment status: <strong>Pending confirmation</strong></p><p>WhatsApp consent: <strong>{registeredMember.whatsapp_opt_in ? 'Recorded' : 'Not granted'}</strong></p></div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-6 text-emerald-900"><p className="font-semibold">Member saved successfully</p><p className="mt-1">Member number: <strong>{registeredMember.member_number}</strong></p><p>Membership: <strong>{registeredMember.registered_duration_label || `${registeredMember.duration_days} days`}</strong></p><p>Fee recorded: <strong>{formatMoney(registeredMember.amount)}</strong></p><p>Payment status: <strong>Pending confirmation</strong></p></div>
             <p className="text-sm leading-6 text-gray-600">The member, membership and pending payment have been saved. The selected plan will be linked to this subscription, or a custom plan will be created/reused for the custom duration. After an authorised staff member confirms payment, use Payments to send the card and receipt by email. WhatsApp delivery is currently paused.</p>
             <button type="button" onClick={onClose} className="w-full rounded-xl bg-[#15251f] px-4 py-3 text-sm font-semibold text-white hover:bg-[#243c31]">Done</button>
           </div>
@@ -1261,7 +1260,6 @@ function AddMemberModal({ onClose, onRegistered, plans = [] }) {
               <label className="block text-sm font-medium text-gray-700">Payment method<select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)} className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3.5 py-3 outline-none focus:border-emerald-500"><option value="cash">Cash</option><option value="bank_transfer">Bank transfer</option><option value="pos">POS</option><option value="other">Other</option></select></label>
               <label className="block text-sm font-medium text-gray-700">Payment reference <span className="font-normal text-gray-400">(optional)</span><input value={externalReference} onChange={e => setExternalReference(e.target.value)} placeholder="Transfer reference / note" className="mt-1.5 w-full rounded-xl border border-gray-200 px-3.5 py-3 outline-none focus:border-emerald-500" /></label>
             </div>
-            <label className="flex items-start gap-3 rounded-xl border border-gray-200 p-3 text-sm font-normal text-gray-700"><input type="checkbox" checked={whatsappOptIn} onChange={e => setWhatsappOptIn(e.target.checked)} className="mt-0.5 h-4 w-4 accent-emerald-600" /><span><span className="block font-medium">WhatsApp updates permission</span><span className="mt-1 block text-xs leading-5 text-gray-500">Tick only when the member agrees to receive their membership card, receipt and relevant expiry reminders through WhatsApp. This records consent; messages are not sent yet.</span></span></label>
             <div className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-900">Registration records the payment as <strong>pending</strong>. Membership will not become active and its period will not start until authorised staff confirm the payment.</div>
             {errorMessage && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm leading-5 text-rose-800">{errorMessage}</p>}
             <div className="flex gap-3 pt-2"><button type="button" onClick={onClose} disabled={saving} className="flex-1 rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">Cancel</button><button type="submit" disabled={saving || (membershipSource === 'plan' && !selectedPlan)} className="flex-1 rounded-xl bg-[#15251f] px-4 py-3 text-sm font-semibold text-white hover:bg-[#243c31] disabled:cursor-not-allowed disabled:opacity-60">{saving ? 'Saving member…' : <><UserRoundPlus size={16} className="mr-2 inline" /> Save member</>}</button></div>
