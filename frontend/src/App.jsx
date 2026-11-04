@@ -10,7 +10,7 @@ import {
   Clock3, CreditCard, Dumbbell, LayoutDashboard,
   LogOut, Menu, Plus, Search, Settings, ShieldCheck,
   Users, Wallet, X, ScanLine, UserRoundPlus, CheckCircle2, Receipt, Printer, QrCode, Mail,
-  Pencil, Save, Building2, MapPin,
+  Pencil, Save, Building2, MapPin, RefreshCw,
 } from 'lucide-react'
 
 const navigation = [
@@ -89,6 +89,7 @@ function StatusBadge({ status }) {
     'Pending payment': 'bg-amber-50 text-amber-700 ring-amber-600/20',
     'Not subscribed': 'bg-sky-50 text-sky-700 ring-sky-600/20',
     'Expiring soon': 'bg-amber-50 text-amber-700 ring-amber-600/20',
+    Scheduled: 'bg-sky-50 text-sky-700 ring-sky-600/20',
     Expired: 'bg-rose-50 text-rose-700 ring-rose-600/20',
     Suspended: 'bg-rose-50 text-rose-700 ring-rose-600/20',
     Inactive: 'bg-gray-100 text-gray-600 ring-gray-500/20',
@@ -99,6 +100,7 @@ function StatusBadge({ status }) {
   const dotClass = status === 'Active' || status === 'Confirmed' ? 'bg-emerald-500'
     : status === 'Expired' || status === 'Suspended' || status === 'Rejected' ? 'bg-rose-500'
     : status === 'Pending payment' || status === 'Expiring soon' ? 'bg-amber-500'
+    : status === 'Scheduled' ? 'bg-sky-500'
     : 'bg-gray-400'
 
   return (
@@ -402,7 +404,7 @@ function MemberCardModal({ member, gymName, onClose }) {
             </div>
             <div className="mt-5 grid grid-cols-2 gap-3 border-t border-gray-100 pt-4">
               <div><p className="text-xs text-gray-500">Membership</p><p className="mt-1 text-sm font-semibold text-gray-900">{member.plan || 'Membership'}</p></div>
-              <div><p className="text-xs text-gray-500">Status</p><p className={`mt-1 text-sm font-semibold ${member.status === 'Active' || member.status === 'Expiring soon' ? 'text-emerald-700' : member.status === 'Pending payment' ? 'text-amber-700' : 'text-rose-700'}`}>{member.status}</p></div>
+              <div><p className="text-xs text-gray-500">Status</p><p className={`mt-1 text-sm font-semibold ${member.status === 'Active' || member.status === 'Expiring soon' ? 'text-emerald-700' : member.status === 'Pending payment' ? 'text-amber-700' : member.status === 'Scheduled' ? 'text-sky-700' : 'text-rose-700'}`}>{member.status}</p></div>
               <div className="col-span-2"><p className="text-xs text-gray-500">Valid through</p><p className="mt-1 text-sm font-semibold text-gray-900">{member.expires && member.expires !== 'After payment confirmation' ? member.expires : member.status === 'Pending payment' ? 'Starts after payment confirmation' : member.expires || 'Not set'}</p></div>
             </div>
             <div className="mt-4 rounded-lg bg-gray-50 px-3 py-2 text-center text-[11px] leading-4 text-gray-500">Present this QR code at reception for membership verification. Entry is subject to live membership status and expiry.</div>
@@ -639,10 +641,32 @@ function MembershipsPage({ memberships, plans, gymId, profileRole, onRefresh }) 
   const [togglingPlanId, setTogglingPlanId] = useState(null)
   const [notice, setNotice] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
+  const [renewalTarget, setRenewalTarget] = useState(null)
+  const [renewalMode, setRenewalMode] = useState('plan')
+  const [renewalPlanId, setRenewalPlanId] = useState('')
+  const [renewalDurationValue, setRenewalDurationValue] = useState('30')
+  const [renewalDurationUnit, setRenewalDurationUnit] = useState('days')
+  const [renewalPrice, setRenewalPrice] = useState('')
+  const [renewalPaymentMethod, setRenewalPaymentMethod] = useState('cash')
+  const [renewalExternalReference, setRenewalExternalReference] = useState('')
+  const [savingRenewal, setSavingRenewal] = useState(false)
 
   const canManagePlans = profileRole === 'owner' || profileRole === 'manager'
+  const activePlans = (plans || []).filter(plan => plan.is_active)
+  const selectedRenewalPlan = activePlans.find(plan => plan.id === renewalPlanId) || null
   const money = value => new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(Number(value || 0))
   const dateLabel = value => value ? new Intl.DateTimeFormat('en-NG', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(`${value}T00:00:00`)) : 'Not set'
+
+  // The parent loads subscriptions newest-first. Keep only the newest row
+  // eligible to offer a renewal action for each existing member.
+  const latestMembershipByMember = new Map()
+  const pendingPaymentMemberIds = new Set()
+  for (const item of memberships) {
+    if (!latestMembershipByMember.has(item.member_id)) {
+      latestMembershipByMember.set(item.member_id, item.id)
+    }
+    if (item.status === 'Pending payment') pendingPaymentMemberIds.add(item.member_id)
+  }
 
   const statusCounts = {
     active: memberships.filter(item => item.status === 'Active' || item.status === 'Expiring soon').length,
@@ -759,6 +783,108 @@ function MembershipsPage({ memberships, plans, gymId, profileRole, onRefresh }) 
     }
   }
 
+  function beginRenewal(item) {
+    if (item.memberStatus !== 'active') {
+      setErrorMessage('This member is inactive or suspended. Update the member status before renewing.')
+      return
+    }
+    if (pendingPaymentMemberIds.has(item.member_id)) {
+      setErrorMessage('This member already has a pending payment. Confirm or resolve it before creating another renewal.')
+      return
+    }
+
+    const matchingPlan = activePlans.find(plan => plan.id === item.plan_id) || activePlans[0] || null
+    const initialDays = Number(item.durationDays || matchingPlan?.duration_days || 30)
+    let initialValue = initialDays
+    let initialUnit = 'days'
+    if (initialDays % 365 === 0) {
+      initialValue = initialDays / 365
+      initialUnit = 'years'
+    } else if (initialDays % 30 === 0) {
+      initialValue = initialDays / 30
+      initialUnit = 'months'
+    } else if (initialDays % 7 === 0) {
+      initialValue = initialDays / 7
+      initialUnit = 'weeks'
+    }
+
+    setRenewalTarget(item)
+    setRenewalMode(matchingPlan ? 'plan' : 'custom')
+    setRenewalPlanId(matchingPlan?.id || '')
+    setRenewalDurationValue(String(initialValue))
+    setRenewalDurationUnit(initialUnit)
+    setRenewalPrice(String(item.planPrice ?? matchingPlan?.price ?? ''))
+    setRenewalPaymentMethod('cash')
+    setRenewalExternalReference('')
+    setErrorMessage('')
+    setNotice('')
+  }
+
+  async function submitRenewal(event) {
+    event.preventDefault()
+    if (!renewalTarget) return
+    setErrorMessage('')
+    setNotice('')
+
+    let planId = null
+    let durationDays
+    let amount
+
+    if (renewalMode === 'plan') {
+      if (!selectedRenewalPlan) {
+        setErrorMessage('Choose an active saved plan, or switch to custom duration.')
+        return
+      }
+      planId = selectedRenewalPlan.id
+      durationDays = Number(selectedRenewalPlan.duration_days)
+      amount = Number(selectedRenewalPlan.price)
+    } else {
+      const value = Number(renewalDurationValue)
+      const multipliers = { days: 1, weeks: 7, months: 30, years: 365 }
+      durationDays = value * multipliers[renewalDurationUnit]
+      amount = Number(renewalPrice)
+      if (!Number.isInteger(value) || value < 1 || !Number.isInteger(durationDays) || durationDays > 3650) {
+        setErrorMessage('Choose a valid renewal duration from 1 to 3,650 days.')
+        return
+      }
+      if (!Number.isFinite(amount) || amount < 0 || amount > 9999999999.99) {
+        setErrorMessage('Enter a valid renewal fee. Use 0 for a free renewal.')
+        return
+      }
+    }
+
+    if (!['cash', 'bank_transfer', 'pos', 'other'].includes(renewalPaymentMethod)) {
+      setErrorMessage('Choose a supported payment method.')
+      return
+    }
+
+    setSavingRenewal(true)
+    try {
+      const { data, error } = await supabase.rpc('create_gym_membership_renewal', {
+        p_member_id: renewalTarget.member_id,
+        p_plan_id: planId,
+        p_duration_days: durationDays,
+        p_price: amount,
+        p_payment_method: renewalPaymentMethod,
+        p_external_reference: renewalExternalReference.trim() || null,
+      })
+      if (error) throw error
+      if (!data?.payment_id || !data?.membership_id) {
+        throw new Error('The renewal was created but its payment details were not returned. Refresh the page and inspect Payments.')
+      }
+
+      const successMessage = `Renewal payment created for ${renewalTarget.memberName}. The existing member profile and QR token were preserved. Confirm the new payment in Payments to activate the renewal.`
+      setRenewalTarget(null)
+      setNotice(successMessage)
+      await onRefresh?.()
+    } catch (error) {
+      console.error('GymAccess membership renewal failed:', error)
+      setErrorMessage(error.message || 'Could not create this membership renewal.')
+    } finally {
+      setSavingRenewal(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -785,18 +911,44 @@ function MembershipsPage({ memberships, plans, gymId, profileRole, onRefresh }) 
           <>
             <div className="flex flex-col gap-3 border-b border-gray-100 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
               <label className="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2.5 focus-within:border-emerald-500"><Search size={16} className="text-gray-400" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search member or plan..." className="w-full bg-transparent text-sm outline-none sm:w-64" /></label>
-              <select aria-label="Filter memberships by status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="rounded-xl border border-gray-200 bg-white px-3.5 py-2.5 text-sm text-gray-700 outline-none focus:border-emerald-500"><option value="all">All statuses</option><option value="active">Active</option><option value="expiring_soon">Expiring soon</option><option value="pending_payment">Pending payment</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option></select>
+              <select aria-label="Filter memberships by status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="rounded-xl border border-gray-200 bg-white px-3.5 py-2.5 text-sm text-gray-700 outline-none focus:border-emerald-500"><option value="all">All statuses</option><option value="active">Active</option><option value="expiring_soon">Expiring soon</option><option value="pending_payment">Pending payment</option><option value="scheduled">Scheduled</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option></select>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left">
-                <thead className="bg-gray-50/80 text-xs font-medium text-gray-500"><tr><th className="px-5 py-3.5">Member</th><th className="px-4 py-3.5">Plan</th><th className="px-4 py-3.5">Start date</th><th className="px-4 py-3.5">Expiry date</th><th className="px-4 py-3.5">Plan price</th><th className="px-5 py-3.5">Status</th></tr></thead>
+              <table className="w-full min-w-[1040px] text-left">
+                <thead className="bg-gray-50/80 text-xs font-medium text-gray-500"><tr><th className="px-5 py-3.5">Member</th><th className="px-4 py-3.5">Plan</th><th className="px-4 py-3.5">Start date</th><th className="px-4 py-3.5">Expiry date</th><th className="px-4 py-3.5">Plan price</th><th className="px-5 py-3.5">Status</th><th className="px-5 py-3.5 text-right">Action</th></tr></thead>
                 <tbody className="divide-y divide-gray-100">
-                  {filteredMemberships.map(item => <tr key={item.id} className="hover:bg-gray-50/70"><td className="px-5 py-4"><p className="text-sm font-medium text-gray-900">{item.memberName}</p><p className="mt-0.5 text-xs text-gray-500">{item.memberNumber || 'Member number unavailable'}</p></td><td className="px-4 py-4 text-sm text-gray-700">{item.planName}</td><td className="whitespace-nowrap px-4 py-4 text-sm text-gray-600">{dateLabel(item.start_date)}</td><td className="whitespace-nowrap px-4 py-4 text-sm text-gray-600">{dateLabel(item.end_date)}</td><td className="whitespace-nowrap px-4 py-4 text-sm text-gray-700">{money(item.planPrice)}</td><td className="px-5 py-4"><StatusBadge status={item.status} /></td></tr>)}
-                  {filteredMemberships.length === 0 && <tr><td colSpan="6" className="px-5 py-12 text-center text-sm text-gray-500">{search || statusFilter !== 'all' ? 'No memberships match your filters.' : 'No membership records yet. Register a member to create the first membership.'}</td></tr>}
+                  {filteredMemberships.map(item => {
+                    const isLatestForMember = latestMembershipByMember.get(item.member_id) === item.id
+                    const hasPendingPayment = pendingPaymentMemberIds.has(item.member_id)
+                    const memberCanRenew = item.memberStatus === 'active'
+                    const canRenewThisRow = isLatestForMember && memberCanRenew && item.status !== 'Scheduled' && !hasPendingPayment
+                    return (
+                      <tr key={item.id} className="hover:bg-gray-50/70">
+                        <td className="px-5 py-4"><p className="text-sm font-medium text-gray-900">{item.memberName}</p><p className="mt-0.5 text-xs text-gray-500">{item.memberNumber || 'Member number unavailable'}</p></td>
+                        <td className="px-4 py-4 text-sm text-gray-700">{item.planName}</td>
+                        <td className="whitespace-nowrap px-4 py-4 text-sm text-gray-600">{dateLabel(item.start_date)}</td>
+                        <td className="whitespace-nowrap px-4 py-4 text-sm text-gray-600">{dateLabel(item.end_date)}</td>
+                        <td className="whitespace-nowrap px-4 py-4 text-sm text-gray-700">{money(item.planPrice)}</td>
+                        <td className="px-5 py-4"><StatusBadge status={item.status} /></td>
+                        <td className="px-5 py-4 text-right">
+                          {isLatestForMember && hasPendingPayment
+                            ? <span className="text-xs font-medium text-amber-700">Payment pending</span>
+                            : canRenewThisRow
+                              ? <button type="button" onClick={() => beginRenewal(item)} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50"><RefreshCw size={13} /> Renew membership</button>
+                              : isLatestForMember && !memberCanRenew
+                                ? <span className="text-xs text-gray-400">Member inactive</span>
+                                : isLatestForMember && item.status === 'Scheduled'
+                                  ? <span className="text-xs text-sky-700">Starts later</span>
+                                  : null}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {filteredMemberships.length === 0 && <tr><td colSpan="7" className="px-5 py-12 text-center text-sm text-gray-500">{search || statusFilter !== 'all' ? 'No memberships match your filters.' : 'No membership records yet. Register a member to create the first membership.'}</td></tr>}
                 </tbody>
               </table>
             </div>
-            <div className="border-t border-gray-100 px-5 py-4 text-xs leading-5 text-gray-500">Payment confirmation activates a membership and starts its validity period. Expiry is calculated from the stored membership dates.</div>
+            <div className="border-t border-gray-100 px-5 py-4 text-xs leading-5 text-gray-500">Payment confirmation activates the new membership period. Early renewals start the day after the member’s latest active expiry date; renewals after expiry start on the confirmation date. Previous membership and payment records are retained.</div>
           </>
         ) : (
           <>
@@ -815,6 +967,81 @@ function MembershipsPage({ memberships, plans, gymId, profileRole, onRefresh }) 
           </>
         )}
       </section>
+
+      {renewalTarget && (
+        <div className="fixed inset-0 z-[65] flex items-start justify-center overflow-y-auto overscroll-contain bg-black/50 p-3 sm:items-center sm:p-4" onMouseDown={event => { if (event.target === event.currentTarget && !savingRenewal) setRenewalTarget(null) }}>
+          <div className="my-auto max-h-[calc(100dvh-1.5rem)] w-full max-w-xl overflow-y-auto overscroll-contain rounded-2xl bg-white p-5 shadow-2xl sm:max-h-[calc(100dvh-2rem)] sm:p-7">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Renew membership</h2>
+                <p className="mt-1 text-sm text-gray-500">Renew the existing member without registering them again.</p>
+              </div>
+              <button type="button" onClick={() => setRenewalTarget(null)} disabled={savingRenewal} aria-label="Close renewal form" className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 disabled:opacity-50"><X size={19} /></button>
+            </div>
+
+            <div className="mt-5 rounded-xl border border-gray-200 bg-gray-50 p-4">
+              <p className="font-semibold text-gray-900">{renewalTarget.memberName}</p>
+              <p className="mt-1 text-xs text-gray-500">Member number: {renewalTarget.memberNumber || 'Unavailable'}</p>
+              <p className="mt-2 text-sm text-gray-600">Current/latest membership: {renewalTarget.planName}</p>
+              <p className="mt-1 text-sm text-gray-600">Current/latest expiry: {dateLabel(renewalTarget.end_date)}</p>
+              <p className="mt-3 text-xs leading-5 text-emerald-800">The member's existing profile, member number, QR token and attendance history will be preserved.</p>
+            </div>
+
+            <form onSubmit={submitRenewal} className="mt-5 space-y-4">
+              <div>
+                <p className="mb-2 text-sm font-medium text-gray-700">Renewal type</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setRenewalMode('plan')} className={`rounded-xl px-3 py-3 text-sm font-semibold ${renewalMode === 'plan' ? 'bg-[#15251f] text-white' : 'border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>Saved plan</button>
+                  <button type="button" onClick={() => setRenewalMode('custom')} className={`rounded-xl px-3 py-3 text-sm font-semibold ${renewalMode === 'custom' ? 'bg-[#15251f] text-white' : 'border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>Custom duration</button>
+                </div>
+              </div>
+
+              {renewalMode === 'plan' ? (
+                <div className="space-y-3">
+                  <label className="block text-sm font-medium text-gray-700">Membership plan
+                    <select required value={renewalPlanId} onChange={event => setRenewalPlanId(event.target.value)} className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3.5 py-3 text-sm outline-none focus:border-emerald-500">
+                      <option value="">Choose a saved plan</option>
+                      {activePlans.map(plan => <option key={plan.id} value={plan.id}>{plan.name} · {plan.duration_days} days · {money(plan.price)}</option>)}
+                    </select>
+                  </label>
+                  {selectedRenewalPlan && <div className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900">{selectedRenewalPlan.duration_days} days · {money(selectedRenewalPlan.price)}</div>}
+                  {activePlans.length === 0 && <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">There are no active saved plans. Choose Custom duration or enable a plan first.</p>}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block text-sm font-medium text-gray-700">Duration
+                      <input required type="number" min="1" step="1" value={renewalDurationValue} onChange={event => setRenewalDurationValue(event.target.value)} className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3.5 py-3 text-sm outline-none focus:border-emerald-500" />
+                    </label>
+                    <label className="block text-sm font-medium text-gray-700">Unit
+                      <select value={renewalDurationUnit} onChange={event => setRenewalDurationUnit(event.target.value)} className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3.5 py-3 text-sm outline-none focus:border-emerald-500"><option value="days">Days</option><option value="weeks">Weeks</option><option value="months">Months</option><option value="years">Years</option></select>
+                    </label>
+                  </div>
+                  <label className="block text-sm font-medium text-gray-700">Renewal fee (₦)
+                    <input required type="number" min="0" max="9999999999.99" step="0.01" value={renewalPrice} onChange={event => setRenewalPrice(event.target.value)} className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3.5 py-3 text-sm outline-none focus:border-emerald-500" placeholder="Enter agreed amount" />
+                  </label>
+                </div>
+              )}
+
+              <label className="block text-sm font-medium text-gray-700">Payment method
+                <select value={renewalPaymentMethod} onChange={event => setRenewalPaymentMethod(event.target.value)} className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3.5 py-3 text-sm outline-none focus:border-emerald-500"><option value="cash">Cash</option><option value="bank_transfer">Bank transfer</option><option value="pos">POS</option><option value="other">Other</option></select>
+              </label>
+              <label className="block text-sm font-medium text-gray-700">Payment reference (optional)
+                <input maxLength="160" value={renewalExternalReference} onChange={event => setRenewalExternalReference(event.target.value)} className="mt-1.5 w-full rounded-xl border border-gray-200 bg-white px-3.5 py-3 text-sm outline-none focus:border-emerald-500" placeholder="Transfer or POS reference" />
+              </label>
+
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-5 text-amber-900">This creates a pending renewal payment. The new period will activate only after an authorised owner or manager confirms that payment has been received. Any remaining days on the current valid membership will be preserved.</div>
+
+              {errorMessage && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{errorMessage}</p>}
+
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <button type="button" onClick={() => setRenewalTarget(null)} disabled={savingRenewal} className="rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+                <button type="submit" disabled={savingRenewal || (renewalMode === 'plan' && !selectedRenewalPlan)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#15251f] px-4 py-3 text-sm font-semibold text-white hover:bg-[#243c31] disabled:cursor-not-allowed disabled:opacity-60"><RefreshCw size={16} /> {savingRenewal ? 'Creating renewal…' : 'Create renewal payment'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1356,16 +1583,29 @@ function Dashboard({ session, onLogout }) {
           }
         })
         const planById = new Map(dbPlans.map(plan => [plan.id, plan]))
-        const latestMembershipByMember = new Map()
-        for (const membership of dbMemberships) {
-          if (!latestMembershipByMember.has(membership.member_id)) {
-            latestMembershipByMember.set(membership.member_id, membership)
-          }
-        }
 
         const todayDate = new Date()
         todayDate.setHours(0, 0, 0, 0)
         const todayISO = `${todayDate.getFullYear()}-${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}`
+
+        // Prefer the membership valid today for the member directory and QR card.
+        // This prevents a pending early renewal from making a still-active member
+        // appear to have lost access before the current period expires.
+        const latestMembershipByMember = new Map()
+        const membershipPriority = membership => {
+          if (membership.status === 'active' && membership.start_date && membership.end_date && membership.start_date <= todayISO && membership.end_date >= todayISO) return 4
+          if (membership.status === 'pending_payment') return 3
+          if (membership.status === 'active' && membership.start_date && membership.start_date > todayISO) return 2
+          if (membership.status === 'active' || membership.status === 'expired') return 1
+          return 0
+        }
+        for (const membership of dbMemberships) {
+          const existing = latestMembershipByMember.get(membership.member_id)
+          if (!existing || membershipPriority(membership) > membershipPriority(existing)) {
+            latestMembershipByMember.set(membership.member_id, membership)
+          }
+        }
+
         const soonDate = new Date(todayDate)
         soonDate.setDate(soonDate.getDate() + 7)
         const soonISO = `${soonDate.getFullYear()}-${String(soonDate.getMonth() + 1).padStart(2, '0')}-${String(soonDate.getDate()).padStart(2, '0')}`
@@ -1376,12 +1616,14 @@ function Dashboard({ session, onLogout }) {
           let status = membership.status === 'pending_payment' ? 'Pending payment'
             : membership.status === 'cancelled' ? 'Cancelled'
             : membership.status === 'expired' || (membership.status === 'active' && membership.end_date && membership.end_date < todayISO) ? 'Expired'
+            : membership.status === 'active' && membership.start_date && membership.start_date > todayISO ? 'Scheduled'
             : membership.status === 'active' && membership.end_date && membership.end_date <= soonISO ? 'Expiring soon'
             : membership.status === 'active' ? 'Active' : 'Inactive'
           return {
             ...membership,
             memberName: member?.full_name || 'Unknown member',
             memberNumber: member?.member_number || '',
+            memberStatus: member?.status || 'inactive',
             planName: plan?.name || 'Custom membership',
             planPrice: plan?.price ?? 0,
             durationDays: plan?.duration_days ?? null,
@@ -1389,7 +1631,7 @@ function Dashboard({ session, onLogout }) {
           }
         })
 
-        const activeMemberships = dbMemberships.filter(m => m.status === 'active' && m.end_date && m.end_date >= todayISO)
+        const activeMemberships = dbMemberships.filter(m => m.status === 'active' && m.start_date && m.start_date <= todayISO && m.end_date && m.end_date >= todayISO)
         const expiringSoon = activeMemberships.filter(m => m.end_date <= soonISO)
         const expiredMemberships = dbMemberships.filter(m => m.status === 'active' && m.end_date && m.end_date < todayISO)
 
@@ -1403,6 +1645,7 @@ function Dashboard({ session, onLogout }) {
           else if (membership?.status === 'pending_payment') status = 'Pending payment'
           else if (membership?.status === 'cancelled') status = 'Cancelled'
           else if (membership?.status === 'expired' || (membership?.status === 'active' && membership.end_date && membership.end_date < todayISO)) status = 'Expired'
+          else if (membership?.status === 'active' && membership.start_date && membership.start_date > todayISO) status = 'Scheduled'
           else if (membership?.status === 'active') status = membership.end_date && membership.end_date <= soonISO ? 'Expiring soon' : 'Active'
 
           const expires = membership?.end_date
